@@ -89,11 +89,46 @@ async function checkConsensus() {
   }
 }
 
+// "Name=0.0.123,Other=0.0.456" -> [["Name","0.0.123"], ...]
+function parseIds(v) {
+  return (v || "").split(",").map((p) => p.trim()).filter(Boolean).map((p) => {
+    const [name, id] = p.includes("=") ? p.split("=").map((x) => x.trim()) : [p, p];
+    return [name, id];
+  });
+}
+
+// Evidence for page copy: a contract may only be labelled "Testnet Deployed" when its
+// Hedera contract ID resolves on the mirror node. Anything else stays "Compiled · Pre-audit".
+async function checkContracts() {
+  for (const [name, id] of parseIds(process.env.HEDERA_CONTRACT_IDS)) {
+    try {
+      const c = await fetchJson(`${mirrorUrl}/api/v1/contracts/${id}`);
+      const created = new Date(Number(c.created_timestamp.split(".")[0]) * 1000).toISOString().slice(0, 10);
+      record(`Contract ${name}`, !c.deleted, `${c.contract_id} created ${created}${c.deleted ? ", DELETED" : ""}, EVM ${c.evm_address} → copy may read "Testnet Deployed · ${c.contract_id}"`);
+    } catch (e) {
+      record(`Contract ${name}`, false, `${id}: ${errText(e)} → keep "Compiled · Pre-audit"`);
+    }
+  }
+}
+
+async function checkTokens() {
+  for (const [name, id] of parseIds(process.env.HEDERA_TOKEN_IDS)) {
+    try {
+      const t = await fetchJson(`${mirrorUrl}/api/v1/tokens/${id}`);
+      record(`HTS token ${name}`, !t.deleted, `${t.token_id} "${t.name}" (${t.symbol}), ${t.type}, supply ${t.total_supply}${t.deleted ? ", DELETED" : ""}`);
+    } catch (e) {
+      record(`HTS token ${name}`, false, `${id}: ${errText(e)}`);
+    }
+  }
+}
+
 console.log(`Hedera connection check — network: ${network}\n`);
 await checkMirror();
 await checkJsonRpc();
 await checkAccount();
 await checkConsensus();
+await checkContracts();
+await checkTokens();
 
 const failed = results.filter((r) => r.ok === false).length;
 const skipped = results.filter((r) => r.ok === null).length;

@@ -7,6 +7,8 @@ Read-only check that a machine can reach Hedera and that your Hedera Portal acco
 | Mirror node | REST access to `<network>.mirrornode.hedera.com` and fresh blocks |
 | JSON-RPC relay | Hashio relay reachable and on the right chain ID (mainnet 295 · testnet 296 · previewnet 297) |
 | Operator account (mirror) | Your portal account ID exists; shows balance and EVM address |
+| Contracts (`HEDERA_CONTRACT_IDS`) | Each contract ID exists on the network and isn't deleted. This is the evidence needed before page copy says "Testnet Deployed" |
+| HTS tokens (`HEDERA_TOKEN_IDS`) | Each test token exists; shows name, symbol, type and supply |
 | Consensus nodes (SDK) | `@hashgraph/sdk` signs in as your operator and runs a free `AccountBalanceQuery` over gRPC |
 
 ## Run
