@@ -1,0 +1,17 @@
+{
+  "name": "hedera-connection-check",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Verifies connectivity to Hedera (mirror node, JSON-RPC relay, consensus nodes) with a Hedera Portal operator account.",
+  "scripts": {
+    "check": "node check-connection.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.81.0",
+    "dotenv": "^16.4.5"
+  }
+}
