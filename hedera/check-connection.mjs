@@ -2,6 +2,7 @@
 // credentials) a signed-client balance query against the consensus nodes.
 // Read-only. Submits no transactions and spends no HBAR.
 import "dotenv/config";
+import net from "node:net";
 import { AccountBalanceQuery, AccountId, Client, PrivateKey } from "@hashgraph/sdk";
 
 const NETWORKS = {
@@ -72,6 +73,16 @@ async function checkAccount() {
   try {
     const info = await fetchJson(`${mirrorUrl}/api/v1/accounts/${operatorId}`);
     record("Operator account (mirror)", !info.deleted, `${info.account} exists${info.deleted ? " (DELETED)" : ""}, balance ${info.balance.balance / 1e8} ℏ, key ${info.key?._type}, EVM ${info.evm_address}`);
+    if (operatorKey) {
+      // Offline proof that the .env key is this account's key: compare public keys (and the derived EVM alias).
+      try {
+        const pub = parseKey(operatorKey).publicKey;
+        const keyOk = info.key?.key?.toLowerCase() === pub.toStringRaw().toLowerCase();
+        record("Operator key matches account", keyOk, keyOk ? `public key matches, derived EVM 0x${pub.toEvmAddress()}` : "the private key in .env does NOT belong to this account");
+      } catch (e) {
+        record("Operator key matches account", false, `could not parse HEDERA_OPERATOR_KEY: ${errText(e)}`);
+      }
+    }
     if (expectedEvm) {
       record("Operator EVM address", info.evm_address?.toLowerCase() === expectedEvm, `mirror ${info.evm_address}, expected ${expectedEvm}`);
     }
@@ -80,22 +91,56 @@ async function checkAccount() {
   }
 }
 
+let reachableNodes = [];
+
+function tcpProbe(host, port, ms = 5000) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    const done = (ok) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(ms, () => done(false));
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+  });
+}
+
+// Consensus nodes speak gRPC on 50211 (plain) / 50212 (TLS), not HTTPS. Many office, hotel and
+// ISP networks block those ports, which shows up in the SDK only as "timeout exceeded".
+async function checkGrpcPorts() {
+  try {
+    const { nodes } = await fetchJson(`${mirrorUrl}/api/v1/network/nodes?limit=4`);
+    const targets = nodes.flatMap((n) => n.service_endpoints.map((e) => ({ node: n.node_account_id, host: e.domain_name || e.ip_address_v4, port: e.port })));
+    const probed = await Promise.all(targets.map(async (t) => ({ ...t, ok: await tcpProbe(t.host, t.port) })));
+    const open = probed.filter((t) => t.ok);
+    reachableNodes = open.filter((t) => t.port === 50211);
+    const ports = [...new Set(probed.map((t) => t.port))].join("/");
+    record("gRPC ports to consensus nodes", open.length > 0, open.length
+      ? `${open.length}/${probed.length} endpoints reachable (e.g. ${open[0].node} ${open[0].host}:${open[0].port})`
+      : `0/${probed.length} endpoints reachable on ports ${ports} — this network or firewall blocks outbound gRPC; try another network (e.g. phone hotspot) or allow TCP ${ports}`);
+  } catch (e) {
+    record("gRPC ports to consensus nodes", false, errText(e));
+  }
+}
+
 async function checkConsensus() {
   if (!operatorId || !operatorKey) {
     record("Consensus nodes (SDK)", null, "HEDERA_OPERATOR_ID / HEDERA_OPERATOR_KEY not set");
     return;
   }
-  const client = Client.forName(network);
+  let client;
   try {
+    // Prefer the nodes the port probe just reached; otherwise the SDK's built-in address book.
+    client = reachableNodes.length
+      ? Client.forNetwork(Object.fromEntries(reachableNodes.map((t) => [`${t.host}:${t.port}`, t.node])))
+      : Client.forName(network);
     client.setOperator(AccountId.fromString(operatorId), parseKey(operatorKey));
-    client.setRequestTimeout(20000);
+    client.setRequestTimeout(60000);
     // Balance queries are free, so this proves the SDK reaches the consensus nodes without spending HBAR.
     const balance = await new AccountBalanceQuery().setAccountId(operatorId).execute(client);
     record("Consensus nodes (SDK)", true, `balance ${balance.hbars.toString()} via ${network} gRPC`);
   } catch (e) {
     record("Consensus nodes (SDK)", false, errText(e));
   } finally {
-    client.close();
+    client?.close();
   }
 }
 
@@ -136,6 +181,7 @@ console.log(`Hedera connection check — network: ${network}\n`);
 await checkMirror();
 await checkJsonRpc();
 await checkAccount();
+await checkGrpcPorts();
 await checkConsensus();
 await checkContracts();
 await checkTokens();
