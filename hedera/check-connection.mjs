@@ -20,6 +20,13 @@ const mirrorUrl = process.env.HEDERA_MIRROR_URL || cfg.mirror;
 const rpcUrl = process.env.HEDERA_JSON_RPC_URL || cfg.rpc;
 const operatorId = process.env.HEDERA_OPERATOR_ID?.trim();
 const operatorKey = process.env.HEDERA_OPERATOR_KEY?.trim();
+const expectedEvm = process.env.HEDERA_OPERATOR_EVM?.trim().toLowerCase();
+
+// The portal shows ECDSA keys as raw hex (0x…) and ED25519 keys as DER (302e…); accept both.
+function parseKey(k) {
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(k)) return PrivateKey.fromStringECDSA(k.replace(/^0x/, ""));
+  return PrivateKey.fromStringDer(k);
+}
 
 const results = [];
 const record = (name, ok, detail) => {
@@ -64,7 +71,10 @@ async function checkAccount() {
   }
   try {
     const info = await fetchJson(`${mirrorUrl}/api/v1/accounts/${operatorId}`);
-    record("Operator account (mirror)", true, `${info.account} exists, balance ${info.balance.balance / 1e8} ℏ, EVM ${info.evm_address}`);
+    record("Operator account (mirror)", !info.deleted, `${info.account} exists${info.deleted ? " (DELETED)" : ""}, balance ${info.balance.balance / 1e8} ℏ, key ${info.key?._type}, EVM ${info.evm_address}`);
+    if (expectedEvm) {
+      record("Operator EVM address", info.evm_address?.toLowerCase() === expectedEvm, `mirror ${info.evm_address}, expected ${expectedEvm}`);
+    }
   } catch (e) {
     record("Operator account (mirror)", false, `${operatorId}: ${errText(e)}`);
   }
@@ -77,7 +87,7 @@ async function checkConsensus() {
   }
   const client = Client.forName(network);
   try {
-    client.setOperator(AccountId.fromString(operatorId), PrivateKey.fromStringDer(operatorKey));
+    client.setOperator(AccountId.fromString(operatorId), parseKey(operatorKey));
     client.setRequestTimeout(20000);
     // Balance queries are free, so this proves the SDK reaches the consensus nodes without spending HBAR.
     const balance = await new AccountBalanceQuery().setAccountId(operatorId).execute(client);

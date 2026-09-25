@@ -22,6 +22,16 @@ npm run check
 
 Exit code `0` = CONNECTED, `1` = at least one check failed.
 
+## GCN testnet account
+
+| Field | Value |
+|---|---|
+| Account ID | `0.0.10716121` |
+| EVM address | `0xd1d8734c645392df255d98287c645592407a3e23` (ECDSA key alias, not the long-zero form) |
+| Network | Testnet (assumed from the portal; confirmed by the check) |
+
+The check fails if the mirror node reports a different EVM address for this account.
+
 ## Status
 
 - **Network:** testnet by default. The portal issues testnet/previewnet accounts. Mainnet is not active for GCN and remains a future buildout item.
