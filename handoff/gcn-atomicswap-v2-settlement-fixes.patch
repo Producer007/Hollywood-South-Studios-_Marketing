@@ -1,0 +1,1127 @@
+From 96e9618b1125cde81e634bb11199b12b8d2159e4 Mon Sep 17 00:00:00 2001
+From: "James A. Holmes Jr." <Hollywoodsouth.eth@pm.me>
+Date: Sat, 26 Sep 2026 00:33:08 +0000
+Subject: [PATCH] Fix settlement defects F1-F4; add tests, testnet deploy and
+ smoke scripts
+
+- withdraw settles both legs atomically (F1: a leg was stranded after the
+  first withdraw)
+- funded flag: no payout before the counterparty deposits (F2: unfunded
+  withdraw paid from other swaps' deposits)
+- refund/forceRefund return only deposited legs (F3)
+- fundSwap runs once (F4)
+- SafeERC20 for token legs, Address.sendValue for HBAR legs, reject native
+  value on token legs
+- Hedera: carbonMinted guard, admin setCarbonCreditNFT, minting disabled
+  while the NFT is address(0)
+- Same fixes in AtomicSwapV2_Eth
+- 17 regression tests over both contracts (13 fail on the pre-fix code)
+- scripts/deploy-hedera.js (hederaTestnet/296 only) records
+  deployments/hedera-testnet.json; scripts/smoke-hedera.js runs one
+  simulated create/fund/withdraw
+- Docs: on-chain Chainlink price validation is not implemented
+
+Pre-audit. Testnet only. Not for live value.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvPBZ5bfJRbLkfZo3phMwK
+---
+ CLAUDE.md                                |  15 ++-
+ README.md                                |  38 +++++-
+ contracts/ethereum/AtomicSwapV2_Eth.sol  |  75 ++++++-----
+ contracts/hedera/AtomicSwapV2_Hedera.sol | 108 +++++++++------
+ contracts/test/MockCarbonNFT.sol         |  17 +++
+ contracts/test/MockERC20.sol             |  13 ++
+ hardhat.config.js                        |   1 +
+ package-lock.json                        | 154 ++++++++++++++++++++++
+ package.json                             |   8 +-
+ scripts/deploy-hedera.js                 |  78 +++++++++++
+ scripts/smoke-hedera.js                  |  52 ++++++++
+ test/AtomicSwapV2.settlement.test.js     | 160 +++++++++++++++++++++++
+ 12 files changed, 637 insertions(+), 82 deletions(-)
+ create mode 100644 contracts/test/MockCarbonNFT.sol
+ create mode 100644 contracts/test/MockERC20.sol
+ create mode 100644 scripts/deploy-hedera.js
+ create mode 100644 scripts/smoke-hedera.js
+ create mode 100644 test/AtomicSwapV2.settlement.test.js
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index ae901f2..24fff40 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -32,6 +32,7 @@ engine and related contracts.
+   Solana, and Sky Protocol
+ - Core contract: **Atomic Swap V2** — Lock → Verify → Reveal → Settle
+ - Chainlink oracle price-deviation validation, ±200 basis points tolerance
++  (design target — not yet in the compiled contracts; see Known gaps)
+ - Contents: Hedera Solidity contract with HTS carbon NFT minting (HIP-206 /
+   HIP-551) and a V2 value-capture registry; an Ethereum variant with an
+   ERC-1155 carbon credit; a Solana Anchor HTLC program; Chainlink Functions
+@@ -98,8 +99,18 @@ would require rewriting all three.
+   reached six deployed tokens in `gcn-exchange`. Worth a specific audit pass.
+ - **Solana program id is a placeholder.** `declare_id!(GCN_ATOMIC_SWAP_V2_PROGRAM_ID)`
+   is not a real base58 program id. Set it before any deploy.
+-- **No deployment record exists.** There is no `deployments/` directory and no
+-  recorded address on any network. Nothing here has been deployed.
++- **Settlement defects F1–F4 were fixed on 26 Sep 2026** (one-sided withdraw
++  stranding a leg, unfunded withdraw/refund paying from other swaps' deposits,
++  repeat funding). `test/AtomicSwapV2.settlement.test.js` guards them; 13 of its
++  17 tests fail against the pre-fix contracts. Keep them green.
++- **On-chain Chainlink price validation is not implemented.** The Architecture
++  section's "±200 basis points" describes the design, not the compiled
++  contracts: neither `AtomicSwapV2_Hedera` nor `AtomicSwapV2_Eth` reads a price
++  feed. Don't describe swaps as price-validated until it is built.
++- **Deployment record:** `deployments/hedera-testnet.json` is written by
++  `scripts/deploy-hedera.js` (testnet only). No other network.
++- **HBAR units:** tinybars (8 decimals) inside the Hedera EVM, weibars (18) at
++  the JSON-RPC relay.
+ - **`reference/` holds superseded variants**, kept rather than deleted: an
+   earlier Hedera contract without the HIP carbon-NFT work, a V1-style Solana
+   program (`create_swap`/`withdraw` vs the V2 `initiate_v`/`redeem_v`), a
+diff --git a/README.md b/README.md
+index 81547cb..f9cf412 100644
+--- a/README.md
++++ b/README.md
+@@ -10,12 +10,13 @@ an off-chain carbon estimator.
+ 
+ | Component | State |
+ |---|---|
+-| `contracts/hedera/AtomicSwapV2_Hedera.sol` | Compiles. Not deployed. |
+-| `contracts/ethereum/AtomicSwapV2_Eth.sol` | Compiles. Not deployed. |
++| `contracts/hedera/AtomicSwapV2_Hedera.sol` | Compiles. Settlement fixes F1–F4 applied and tested. Testnet deployment: see `deployments/`. |
++| `contracts/ethereum/AtomicSwapV2_Eth.sol` | Compiles. Settlement fixes F1–F4 applied and tested. Not deployed. |
+ | `contracts/ethereum/GCNCarbonCredit.sol` | Compiles. Not deployed. |
+ | `solana/programs/atomic_swap_v2_solana/` | Anchor program. Placeholder program id. |
+ | CCIP cross-chain variant | Incomplete draft in `reference/`. Future buildout. |
+-| Deployment record | None exists on any network. |
++| On-chain Chainlink price validation (±200 bps) | **Not implemented** in either compiled contract. |
++| Deployment record | `deployments/hedera-testnet.json`, written by the deploy script. No other network. |
+ 
+ ## Build
+ 
+@@ -26,3 +27,34 @@ node compile.js
+ 
+ solc 0.8.19 + OpenZeppelin 4.9.6, both locked. See `CLAUDE.md` for why, and for
+ the standing rules that govern changes here.
++
++## Test
++
++```
++npx hardhat test    # 17 settlement regression tests, both contracts
++```
++
++## Pre-audit settlement fixes (26 Sep 2026)
++
++| # | Finding | Fix |
++|---|---|---|
++| F1 | After one party withdrew, the other party's leg was locked forever | `withdraw` settles both legs in one transaction |
++| F2 | Initiator could withdraw the counterparty amount without it ever being funded, paid from other swaps' deposits | `funded` flag; `withdraw` requires it |
++| F3 | `refund` paid the counterparty amount even if never funded | Refund returns only deposited legs |
++| F4 | `fundSwap` accepted repeat funding; the extra was unrecoverable | `fundSwap` runs once |
++| n/a | Unchecked ERC-20 transfers; `transfer()` 2300-gas sends | `SafeERC20`; `Address.sendValue` |
++| n/a | Hedera carbon NFT could double-mint; no way to set the NFT after deploy | `carbonMinted` flag; admin `setCarbonCreditNFT` |
++
++These fixes are not a substitute for the independent security audit.
++
++## Deploy to Hedera testnet
++
++```
++cp .env.example .env          # HEDERA_PRIVATE_KEY = testnet ECDSA hex key
++npm run deploy:hedera-testnet # refuses any network but hederaTestnet (296)
++npm run smoke:hedera-testnet  # one simulated swap: create → fund → withdraw
++```
++
++HBAR amounts inside the Hedera EVM are tinybars (8 decimals). The JSON-RPC relay
++takes `value` in weibars (18 decimals): sending 1 HBAR means `value = 1e18` and an
++amount argument of `1e8`.
+diff --git a/contracts/ethereum/AtomicSwapV2_Eth.sol b/contracts/ethereum/AtomicSwapV2_Eth.sol
+index 3f5a0bd..6a079dc 100644
+--- a/contracts/ethereum/AtomicSwapV2_Eth.sol
++++ b/contracts/ethereum/AtomicSwapV2_Eth.sol
+@@ -2,13 +2,19 @@
+ pragma solidity ^0.8.19;
+ 
+ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import "@openzeppelin/contracts/utils/Address.sol";
+ import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+ import "@openzeppelin/contracts/access/AccessControl.sol";
+ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+ import "@openzeppelin/contracts/utils/Strings.sol";
+ import "./GCNCarbonCredit.sol";
+ 
++// Same settlement semantics as AtomicSwapV2_Hedera (pre-audit fixes, 26 Sep 2026):
++// fund once, settle both legs atomically, refund only what was deposited.
+ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
++    using SafeERC20 for IERC20;
++
+     struct Swap {
+         address payable initiator;
+         address payable counterparty;
+@@ -22,6 +28,7 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+         bool refunded;
+         uint256 carbonTokenId;
+         bool carbonMinted;
++        bool funded;                 // counterparty leg deposited
+     }
+ 
+     mapping(bytes32 => Swap) public swaps;
+@@ -32,6 +39,8 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+     event ValueCaptured(bytes32 indexed swapId, string valueType, uint256 amount, uint256 timestamp);
+     event SwapWithdrawn(bytes32 indexed swapId, address indexed withdrawer);
+     event CarbonNFTMinted(bytes32 indexed swapId, address indexed minter, uint256 tokenId, uint256 carbonSavedGrams);
++    event SwapFunded(bytes32 indexed swapId, address indexed counterparty, uint256 amount);
++    event SwapRefunded(bytes32 indexed swapId, bool counterpartyLegReturned);
+ 
+     constructor(address _carbonCreditNFT) {
+         carbonCreditNFT = GCNCarbonCredit(_carbonCreditNFT);
+@@ -53,13 +62,15 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+     ) external payable nonReentrant returns (bytes32 swapId) {
+         require(_counterparty != address(0), "Invalid counterparty");
+         require(_expiry > block.timestamp, "Expiry must be future");
++        require(_initiatorAmount > 0 && _counterpartyAmount > 0, "Amount zero");
+         swapId = keccak256(abi.encodePacked(msg.sender, _counterparty, _hashLock, block.timestamp));
+         require(swaps[swapId].initiator == address(0), "Swap already exists");
+ 
+         if (_initiatorAsset == address(0)) {
+             require(msg.value == _initiatorAmount, "Incorrect native amount");
+         } else {
+-            IERC20(_initiatorAsset).transferFrom(msg.sender, address(this), _initiatorAmount);
++            require(msg.value == 0, "Native sent with token leg");
++            IERC20(_initiatorAsset).safeTransferFrom(msg.sender, address(this), _initiatorAmount);
+         }
+ 
+         swaps[swapId] = Swap({
+@@ -74,7 +85,8 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+             withdrawn: false,
+             refunded: false,
+             carbonTokenId: 0,
+-            carbonMinted: false
++            carbonMinted: false,
++            funded: false
+         });
+ 
+         emit SwapCreated(swapId, msg.sender, _counterparty);
+@@ -83,28 +95,31 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+     function fundSwap(bytes32 _swapId) external payable swapExists(_swapId) notExpired(_swapId) nonReentrant {
+         Swap storage s = swaps[_swapId];
+         require(msg.sender == s.counterparty, "Only counterparty can fund");
+-        require(!s.withdrawn, "Already withdrawn");
++        require(!s.funded, "Already funded");
++        require(!s.withdrawn && !s.refunded, "Swap already completed");
++        s.funded = true;
+ 
+         if (s.counterpartyAsset == address(0)) {
+             require(msg.value == s.counterpartyAmount, "Incorrect native amount");
+         } else {
+-            IERC20(s.counterpartyAsset).transferFrom(msg.sender, address(this), s.counterpartyAmount);
++            require(msg.value == 0, "Native sent with token leg");
++            IERC20(s.counterpartyAsset).safeTransferFrom(msg.sender, address(this), s.counterpartyAmount);
+         }
++        emit SwapFunded(_swapId, msg.sender, s.counterpartyAmount);
+     }
+ 
+     function withdraw(bytes32 _swapId, bytes32 _preimage) external swapExists(_swapId) notExpired(_swapId) nonReentrant {
+         Swap storage s = swaps[_swapId];
+         require(!s.withdrawn && !s.refunded, "Swap already completed");
++        require(s.funded, "Counterparty has not funded");
+         require(msg.sender == s.initiator || msg.sender == s.counterparty, "Not party");
+         require(sha256(abi.encodePacked(_preimage)) == s.hashLock, "Invalid preimage");
+ 
+         s.withdrawn = true;
+ 
+-        if (msg.sender == s.initiator) {
+-            _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.initiator);
+-        } else {
+-            _transferAsset(s.initiatorAsset, s.initiatorAmount, s.counterparty);
+-        }
++        // Settle both legs atomically.
++        _transferAsset(s.initiatorAsset, s.initiatorAmount, s.counterparty);
++        _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.initiator);
+ 
+         emit SwapWithdrawn(_swapId, msg.sender);
+         emit ValueCaptured(_swapId, "realised_financial_value", s.initiatorAmount + s.counterpartyAmount, block.timestamp);
+@@ -126,29 +141,12 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+     }
+ 
+     function refund(bytes32 _swapId) external swapExists(_swapId) nonReentrant {
+-        Swap storage s = swaps[_swapId];
+-        require(block.timestamp > s.expiry, "Swap not expired");
+-        require(!s.withdrawn && !s.refunded, "Swap already completed");
+-        s.refunded = true;
+-
+-        if (s.initiatorAsset == address(0)) {
+-            payable(s.initiator).transfer(s.initiatorAmount);
+-        } else {
+-            IERC20(s.initiatorAsset).transfer(s.initiator, s.initiatorAmount);
+-        }
+-        if (s.counterpartyAsset == address(0)) {
+-            payable(s.counterparty).transfer(s.counterpartyAmount);
+-        } else {
+-            IERC20(s.counterpartyAsset).transfer(s.counterparty, s.counterpartyAmount);
+-        }
++        require(block.timestamp > swaps[_swapId].expiry, "Swap not expired");
++        _refund(_swapId);
+     }
+ 
+-    function forceRefund(bytes32 _swapId) external onlyCentralBank swapExists(_swapId) {
+-        Swap storage s = swaps[_swapId];
+-        require(!s.withdrawn && !s.refunded, "Swap already completed");
+-        s.refunded = true;
+-        _transferAsset(s.initiatorAsset, s.initiatorAmount, s.initiator);
+-        _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.counterparty);
++    function forceRefund(bytes32 _swapId) external onlyCentralBank swapExists(_swapId) nonReentrant {
++        _refund(_swapId);
+     }
+ 
+     // ------------------------- Modifiers & Helpers -------------------------
+@@ -167,11 +165,24 @@ contract AtomicSwapV2_Eth is AccessControl, ReentrancyGuard {
+         _;
+     }
+ 
++    // Returns what was actually deposited: always the initiator leg, the counterparty
++    // leg only if it was funded.
++    function _refund(bytes32 _swapId) internal {
++        Swap storage s = swaps[_swapId];
++        require(!s.withdrawn && !s.refunded, "Swap already completed");
++        s.refunded = true;
++        _transferAsset(s.initiatorAsset, s.initiatorAmount, s.initiator);
++        if (s.funded) {
++            _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.counterparty);
++        }
++        emit SwapRefunded(_swapId, s.funded);
++    }
++
+     function _transferAsset(address asset, uint256 amount, address payable to) internal {
+         if (asset == address(0)) {
+-            to.transfer(amount);
++            Address.sendValue(to, amount);
+         } else {
+-            IERC20(asset).transfer(to, amount);
++            IERC20(asset).safeTransfer(to, amount);
+         }
+     }
+ }
+diff --git a/contracts/hedera/AtomicSwapV2_Hedera.sol b/contracts/hedera/AtomicSwapV2_Hedera.sol
+index 9026272..d0357d9 100644
+--- a/contracts/hedera/AtomicSwapV2_Hedera.sol
++++ b/contracts/hedera/AtomicSwapV2_Hedera.sol
+@@ -2,6 +2,8 @@
+ pragma solidity ^0.8.19;
+ 
+ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import "@openzeppelin/contracts/utils/Address.sol";
+ import "@openzeppelin/contracts/access/AccessControl.sol";
+ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+ 
+@@ -19,7 +21,24 @@ interface IGCNCarbonCreditNFT {
+     function setTokenURI(uint256 tokenId, string calldata uri) external;
+ }
+ 
++/**
++ * Settlement semantics (pre-audit fixes, 26 Sep 2026):
++ * - The counterparty funds exactly once (`funded`); nothing pays out before that.
++ * - withdraw() settles BOTH legs in one transaction: the initiator's asset to the
++ *   counterparty and the counterparty's asset to the initiator. Either party may
++ *   call it with the preimage. No leg can be left stranded.
++ * - refund()/forceRefund() return only what was actually deposited.
++ * - ERC-20 legs use SafeERC20; HBAR legs use Address.sendValue.
++ *
++ * HBAR amounts are in tinybars (8 decimals) inside the contract. The JSON-RPC
++ * relay takes msg.value in weibars (18 decimals) and converts, so a caller sending
++ * 1 HBAR passes value = 1e18 but _initiatorAmount = 1e8.
++ *
++ * Not implemented: on-chain Chainlink price validation. See CLAUDE.md Known gaps.
++ */
+ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
++    using SafeERC20 for IERC20;
++
+     // ======================== V2: Value Capture Registry ========================
+     struct Swap {
+         address payable initiator;
+@@ -30,11 +49,13 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+         uint256 counterpartyAmount;
+         bytes32 hashLock;
+         uint256 expiry;
+-        bool withdrawn;
++        bool withdrawn;              // true once both legs have settled
+         bool refunded;
+         bool v2;                     // V2 flag
+         uint256 initiatorTokenId;    // For carbon NFT (0 if not minted)
+         uint256 counterpartyTokenId;
++        bool funded;                 // counterparty leg deposited
++        bool carbonMinted;
+     }
+ 
+     // Mapping from swapId (hash of parameters) to Swap.
+@@ -49,6 +70,9 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+     event ValueCaptured(bytes32 indexed swapId, string valueType, uint256 amount, uint256 timestamp);
+     event SwapWithdrawn(bytes32 indexed swapId, address indexed withdrawer);
+     event CarbonNftMinted(bytes32 indexed swapId, address indexed minter, uint256 tokenId);
++    event SwapFunded(bytes32 indexed swapId, address indexed counterparty, uint256 amount);
++    event SwapRefunded(bytes32 indexed swapId, bool counterpartyLegReturned);
++    event CarbonCreditNFTUpdated(address indexed nft);
+ 
+     modifier onlyCentralBank() {
+         require(isCentralBankNode[msg.sender], "Only BRICS central bank node");
+@@ -71,11 +95,18 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+     }
+ 
+     // ------------------------- 1. Initialize ---------------------------------
++    // _carbonCreditNFT may be address(0): carbon minting stays disabled until the
++    // admin sets it with setCarbonCreditNFT().
+     constructor(address _carbonCreditNFT) {
+         carbonCreditNFT = IGCNCarbonCreditNFT(_carbonCreditNFT);
+         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+     }
+ 
++    function setCarbonCreditNFT(address _nft) external onlyRole(DEFAULT_ADMIN_ROLE) {
++        carbonCreditNFT = IGCNCarbonCreditNFT(_nft);
++        emit CarbonCreditNFTUpdated(_nft);
++    }
++
+     function addCentralBankNode(address _node) external onlyRole(DEFAULT_ADMIN_ROLE) {
+         isCentralBankNode[_node] = true;
+     }
+@@ -102,8 +133,8 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+             // HBAR
+             require(msg.value == _initiatorAmount, "Incorrect HBAR amount sent");
+         } else {
+-            IERC20 token = IERC20(_initiatorAsset);
+-            require(token.transferFrom(msg.sender, address(this), _initiatorAmount), "Transfer failed");
++            require(msg.value == 0, "HBAR sent with token leg");
++            IERC20(_initiatorAsset).safeTransferFrom(msg.sender, address(this), _initiatorAmount);
+         }
+ 
+         swaps[swapId] = Swap({
+@@ -119,7 +150,9 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+             refunded: false,
+             v2: true,
+             initiatorTokenId: 0,
+-            counterpartyTokenId: 0
++            counterpartyTokenId: 0,
++            funded: false,
++            carbonMinted: false
+         });
+         emit SwapCreated(swapId, msg.sender, _counterparty, _initiatorAmount);
+     }
+@@ -128,16 +161,18 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+     function fundSwap(bytes32 _swapId) external payable swapExists(_swapId) notExpired(_swapId) nonReentrant {
+         Swap storage s = swaps[_swapId];
+         require(msg.sender == s.counterparty, "Only counterparty can fund");
+-        require(!s.withdrawn, "Already withdrawn");
++        require(!s.funded, "Already funded");
++        require(!s.withdrawn && !s.refunded, "Swap already completed");
++        s.funded = true;
+ 
+         // Lock counterparty's asset.
+         if (s.counterpartyAsset == address(0)) {
+             require(msg.value == s.counterpartyAmount, "Incorrect HBAR amount sent");
+         } else {
+-            IERC20 token = IERC20(s.counterpartyAsset);
+-            require(token.transferFrom(msg.sender, address(this), s.counterpartyAmount), "Transfer failed");
++            require(msg.value == 0, "HBAR sent with token leg");
++            IERC20(s.counterpartyAsset).safeTransferFrom(msg.sender, address(this), s.counterpartyAmount);
+         }
+-        // No explicit flag needed; we will use amount presence.
++        emit SwapFunded(_swapId, msg.sender, s.counterpartyAmount);
+         emit ValueCaptured(_swapId, "conjectured_value", s.counterpartyAmount, block.timestamp);
+     }
+ 
+@@ -145,19 +180,15 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+     function withdraw(bytes32 _swapId, bytes32 _preimage) external swapExists(_swapId) notExpired(_swapId) nonReentrant {
+         Swap storage s = swaps[_swapId];
+         require(!s.withdrawn && !s.refunded, "Swap already completed");
++        require(s.funded, "Counterparty has not funded");
+         require(msg.sender == s.initiator || msg.sender == s.counterparty, "Not party");
+         require(sha256(abi.encodePacked(_preimage)) == s.hashLock, "Invalid preimage");
+ 
+         s.withdrawn = true;
+ 
+-        // Transfer the locked assets accordingly.
+-        if (msg.sender == s.initiator) {
+-            // Initiator receives counterparty's asset.
+-            _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.initiator);
+-        } else {
+-            // Counterparty receives initiator's asset.
+-            _transferAsset(s.initiatorAsset, s.initiatorAmount, s.counterparty);
+-        }
++        // Settle both legs atomically.
++        _transferAsset(s.initiatorAsset, s.initiatorAmount, s.counterparty);
++        _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.initiator);
+ 
+         emit SwapWithdrawn(_swapId, msg.sender);
+         // Record realised financial value.
+@@ -166,20 +197,7 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+ 
+     // ------------------------- 5. Refund (after expiry) --------------------
+     function refund(bytes32 _swapId) external swapExists(_swapId) onlyAfterExpiry(_swapId) nonReentrant {
+-        Swap storage s = swaps[_swapId];
+-        require(!s.withdrawn && !s.refunded, "Swap already completed");
+-        s.refunded = true;
+-        // Return locked assets to original owners.
+-        if (s.initiatorAsset == address(0)) {
+-            payable(s.initiator).transfer(s.initiatorAmount);
+-        } else {
+-            IERC20(s.initiatorAsset).transfer(s.initiator, s.initiatorAmount);
+-        }
+-        if (s.counterpartyAsset == address(0)) {
+-            payable(s.counterparty).transfer(s.counterpartyAmount);
+-        } else {
+-            IERC20(s.counterpartyAsset).transfer(s.counterparty, s.counterpartyAmount);
+-        }
++        _refund(_swapId);
+     }
+ 
+     // ------------------------- 6. Mint Carbon Credit NFT (V2 Feature) ------
+@@ -187,6 +205,9 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+         Swap storage s = swaps[_swapId];
+         require(s.withdrawn, "Swap not yet settled");
+         require(msg.sender == s.initiator || msg.sender == s.counterparty, "Only swap parties");
++        require(!s.carbonMinted, "Carbon NFT already minted");
++        require(address(carbonCreditNFT) != address(0), "Carbon NFT not configured");
++        s.carbonMinted = true;
+         uint256 tokenId = _swapIdToUint(_swapId);
+         carbonCreditNFT.safeMint(msg.sender, tokenId);
+         carbonCreditNFT.setTokenURI(tokenId, uri);
+@@ -200,28 +221,29 @@ contract AtomicSwapV2_Hedera is ReentrancyGuard, AccessControl {
+     }
+ 
+     // ------------------------- 8. Force Refund by Central Bank -------------
+-    function forceRefund(bytes32 _swapId) external onlyCentralBank swapExists(_swapId) {
++    function forceRefund(bytes32 _swapId) external onlyCentralBank swapExists(_swapId) nonReentrant {
++        _refund(_swapId);
++    }
++
++    // ------------------------- Internal Helpers ----------------------------
++    // Returns what was actually deposited: always the initiator leg, the counterparty
++    // leg only if it was funded.
++    function _refund(bytes32 _swapId) internal {
+         Swap storage s = swaps[_swapId];
+         require(!s.withdrawn && !s.refunded, "Swap already completed");
+         s.refunded = true;
+-        if (s.initiatorAsset == address(0)) {
+-            payable(s.initiator).transfer(s.initiatorAmount);
+-        } else {
+-            IERC20(s.initiatorAsset).transfer(s.initiator, s.initiatorAmount);
+-        }
+-        if (s.counterpartyAsset == address(0)) {
+-            payable(s.counterparty).transfer(s.counterpartyAmount);
+-        } else {
+-            IERC20(s.counterpartyAsset).transfer(s.counterparty, s.counterpartyAmount);
++        _transferAsset(s.initiatorAsset, s.initiatorAmount, s.initiator);
++        if (s.funded) {
++            _transferAsset(s.counterpartyAsset, s.counterpartyAmount, s.counterparty);
+         }
++        emit SwapRefunded(_swapId, s.funded);
+     }
+ 
+-    // ------------------------- Internal Helpers ----------------------------
+     function _transferAsset(address asset, uint256 amount, address payable to) internal {
+         if (asset == address(0)) {
+-            to.transfer(amount);
++            Address.sendValue(to, amount);
+         } else {
+-            IERC20(asset).transfer(to, amount);
++            IERC20(asset).safeTransfer(to, amount);
+         }
+     }
+ 
+diff --git a/contracts/test/MockCarbonNFT.sol b/contracts/test/MockCarbonNFT.sol
+new file mode 100644
+index 0000000..82d8186
+--- /dev/null
++++ b/contracts/test/MockCarbonNFT.sol
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.19;
++
++// Test-only stand-in for the external carbon-credit NFT. Never deploy.
++contract MockCarbonNFT {
++    mapping(uint256 => address) public ownerOf;
++    mapping(uint256 => string) public tokenURI;
++
++    function safeMint(address to, uint256 tokenId) external {
++        require(ownerOf[tokenId] == address(0), "minted");
++        ownerOf[tokenId] = to;
++    }
++
++    function setTokenURI(uint256 tokenId, string calldata uri) external {
++        tokenURI[tokenId] = uri;
++    }
++}
+diff --git a/contracts/test/MockERC20.sol b/contracts/test/MockERC20.sol
+new file mode 100644
+index 0000000..e22df63
+--- /dev/null
++++ b/contracts/test/MockERC20.sol
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.19;
++
++import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++
++// Test-only token for the swap regression tests. Never deploy.
++contract MockERC20 is ERC20 {
++    constructor() ERC20("Mock", "MOCK") {}
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++}
+diff --git a/hardhat.config.js b/hardhat.config.js
+index 25e1e98..4886581 100644
+--- a/hardhat.config.js
++++ b/hardhat.config.js
+@@ -1,4 +1,5 @@
+ require("dotenv").config();
++require("@nomicfoundation/hardhat-ethers");
+ 
+ /**
+  * Locked: solc 0.8.19 + OpenZeppelin 4.9.6.
+diff --git a/package-lock.json b/package-lock.json
+index 8d7c7d2..6e3a843 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -14,9 +14,19 @@
+         "solc": "^0.8.19"
+       },
+       "devDependencies": {
++        "@nomicfoundation/hardhat-ethers": "^3.1.3",
++        "chai": "^4.5.0",
++        "ethers": "^6.17.0",
+         "hardhat": "2.22.17"
+       }
+     },
++    "node_modules/@adraffy/ens-normalize": {
++      "version": "1.11.1",
++      "resolved": "https://registry.npmjs.org/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz",
++      "integrity": "sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@arbitrum/nitro-contracts": {
+       "version": "3.0.0",
+       "resolved": "https://registry.npmjs.org/@arbitrum/nitro-contracts/-/nitro-contracts-3.0.0.tgz",
+@@ -1001,6 +1011,32 @@
+         "node": ">=12.0.0"
+       }
+     },
++    "node_modules/@noble/curves": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/@noble/curves/-/curves-1.2.0.tgz",
++      "integrity": "sha512-oYclrNgRaM9SsBUBVbb8M6DTV7ZHRTKugureoYEncY5c65HOmRzvSiTE3y5CYaPYJA/GVkrhXEoF0M3Ya9PMnw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@noble/hashes": "1.3.2"
++      },
++      "funding": {
++        "url": "https://paulmillr.com/funding/"
++      }
++    },
++    "node_modules/@noble/curves/node_modules/@noble/hashes": {
++      "version": "1.3.2",
++      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.3.2.tgz",
++      "integrity": "sha512-MVC8EAQp7MvEcm30KWENFjgR+Mkmf+D189XJTkFIlwohU5hcBbn1ZkKq7KVTi2Hme3PMGF390DaL52beVrIihQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 16"
++      },
++      "funding": {
++        "url": "https://paulmillr.com/funding/"
++      }
++    },
+     "node_modules/@noble/hashes": {
+       "version": "1.2.0",
+       "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.2.0.tgz",
+@@ -1268,6 +1304,21 @@
+         "setimmediate": "^1.0.5"
+       }
+     },
++    "node_modules/@nomicfoundation/hardhat-ethers": {
++      "version": "3.1.3",
++      "resolved": "https://registry.npmjs.org/@nomicfoundation/hardhat-ethers/-/hardhat-ethers-3.1.3.tgz",
++      "integrity": "sha512-208JcDeVIl+7Wu3MhFUUtiA8TJ7r2Rn3Wr+lSx9PfsDTKkbsAsWPY6N6wQ4mtzDv0/pB9nIbJhkjoHe1EsgNsA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "debug": "^4.1.1",
++        "lodash.isequal": "^4.5.0"
++      },
++      "peerDependencies": {
++        "ethers": "^6.14.0",
++        "hardhat": "^2.28.0"
++      }
++    },
+     "node_modules/@nomicfoundation/solidity-analyzer": {
+       "version": "0.1.2",
+       "resolved": "https://registry.npmjs.org/@nomicfoundation/solidity-analyzer/-/solidity-analyzer-0.1.2.tgz",
+@@ -1690,6 +1741,13 @@
+         "node": ">=0.3.0"
+       }
+     },
++    "node_modules/aes-js": {
++      "version": "4.0.0-beta.5",
++      "resolved": "https://registry.npmjs.org/aes-js/-/aes-js-4.0.0-beta.5.tgz",
++      "integrity": "sha512-G965FqalsNyrPqgEGON7nIx1e/OVENSgiEIzyC63haUMuvNnwIgIjMs52hlTCKhkBny7A2ORNlfY9Zu+jmGk1Q==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/agent-base": {
+       "version": "6.0.2",
+       "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+@@ -2734,6 +2792,87 @@
+         "setimmediate": "^1.0.5"
+       }
+     },
++    "node_modules/ethers": {
++      "version": "6.17.0",
++      "resolved": "https://registry.npmjs.org/ethers/-/ethers-6.17.0.tgz",
++      "integrity": "sha512-BpyrpIPJ3ydEVow8zGaz1DuPS7YU8DcWxuBnY9a0UA/lvAPwrMr+EPXsfrul628SRaekPNeIM4UFh/91GWZang==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "individual",
++          "url": "https://github.com/sponsors/ethers-io/"
++        },
++        {
++          "type": "individual",
++          "url": "https://www.buymeacoffee.com/ricmoo"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "@adraffy/ens-normalize": "1.11.1",
++        "@noble/curves": "1.2.0",
++        "@noble/hashes": "1.3.2",
++        "@types/node": "22.7.5",
++        "aes-js": "4.0.0-beta.5",
++        "tslib": "2.7.0",
++        "ws": "8.21.0"
++      },
++      "engines": {
++        "node": ">=14.0.0"
++      }
++    },
++    "node_modules/ethers/node_modules/@noble/hashes": {
++      "version": "1.3.2",
++      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.3.2.tgz",
++      "integrity": "sha512-MVC8EAQp7MvEcm30KWENFjgR+Mkmf+D189XJTkFIlwohU5hcBbn1ZkKq7KVTi2Hme3PMGF390DaL52beVrIihQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 16"
++      },
++      "funding": {
++        "url": "https://paulmillr.com/funding/"
++      }
++    },
++    "node_modules/ethers/node_modules/@types/node": {
++      "version": "22.7.5",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.7.5.tgz",
++      "integrity": "sha512-jML7s2NAzMWc//QSJ1a3prpk78cOPchGvXJsC3C6R6PSMoooztvRVQEz89gmBTBY1SPMaqo5teB4uNHPdetShQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "undici-types": "~6.19.2"
++      }
++    },
++    "node_modules/ethers/node_modules/tslib": {
++      "version": "2.7.0",
++      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.7.0.tgz",
++      "integrity": "sha512-gLXCKdN1/j47AiHiOkJN69hJmcbGTHI0ImLmbYLHykhgeN0jVGola9yVjFgzCUklsZQMW55o+dW7IXv3RCXDzA==",
++      "dev": true,
++      "license": "0BSD"
++    },
++    "node_modules/ethers/node_modules/ws": {
++      "version": "8.21.0",
++      "resolved": "https://registry.npmjs.org/ws/-/ws-8.21.0.tgz",
++      "integrity": "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=10.0.0"
++      },
++      "peerDependencies": {
++        "bufferutil": "^4.0.1",
++        "utf-8-validate": ">=5.0.2"
++      },
++      "peerDependenciesMeta": {
++        "bufferutil": {
++          "optional": true
++        },
++        "utf-8-validate": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/ethjs-util": {
+       "version": "0.1.6",
+       "resolved": "https://registry.npmjs.org/ethjs-util/-/ethjs-util-0.1.6.tgz",
+@@ -3897,6 +4036,14 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/lodash.isequal": {
++      "version": "4.5.0",
++      "resolved": "https://registry.npmjs.org/lodash.isequal/-/lodash.isequal-4.5.0.tgz",
++      "integrity": "sha512-pDo3lu8Jhfjqls6GkMgpahsF9kCyayhgykjyLMNFTKWrpVdAQtYyB4muAMWozBB4ig/dtWAmsMxLEI8wuz+DYQ==",
++      "deprecated": "This package is deprecated. Use require('node:util').isDeepStrictEqual instead.",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/lodash.startcase": {
+       "version": "4.4.0",
+       "resolved": "https://registry.npmjs.org/lodash.startcase/-/lodash.startcase-4.4.0.tgz",
+@@ -5506,6 +5653,13 @@
+         "node": ">=14.0"
+       }
+     },
++    "node_modules/undici-types": {
++      "version": "6.19.8",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.19.8.tgz",
++      "integrity": "sha512-ve2KP6f/JnbPBFyobGHuerC9g1FYGn/F8n1LWTwNxCEzd6IfqTwUQcNXgEtmmQ6DlRrC1hrSrBnCZPokRrDHjw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/universalify": {
+       "version": "0.1.2",
+       "resolved": "https://registry.npmjs.org/universalify/-/universalify-0.1.2.tgz",
+diff --git a/package.json b/package.json
+index b329ab9..c97b068 100644
+--- a/package.json
++++ b/package.json
+@@ -2,13 +2,17 @@
+   "name": "gcn-atomicswap-v2",
+   "version": "1.0.0",
+   "private": true,
+-  "description": "GCN Exchange settlement engine — Atomic Swap V2. Pre-audit, testnet only.",
++  "description": "GCN Exchange settlement engine \u2014 Atomic Swap V2. Pre-audit, testnet only.",
+   "scripts": {
+     "compile": "npx hardhat compile",
+     "test": "npx hardhat test",
+-    "deploy:hedera-testnet": "npx hardhat run scripts/deploy-hedera.js --network hederaTestnet"
++    "deploy:hedera-testnet": "npx hardhat run scripts/deploy-hedera.js --network hederaTestnet",
++    "smoke:hedera-testnet": "npx hardhat run scripts/smoke-hedera.js --network hederaTestnet"
+   },
+   "devDependencies": {
++    "@nomicfoundation/hardhat-ethers": "^3.1.3",
++    "chai": "^4.5.0",
++    "ethers": "^6.17.0",
+     "hardhat": "2.22.17"
+   },
+   "dependencies": {
+diff --git a/scripts/deploy-hedera.js b/scripts/deploy-hedera.js
+new file mode 100644
+index 0000000..20c0d4c
+--- /dev/null
++++ b/scripts/deploy-hedera.js
+@@ -0,0 +1,78 @@
++// Deploys AtomicSwapV2_Hedera to Hedera TESTNET and records the result in
++// deployments/hedera-testnet.json. Pre-audit: testnet only, not for live value.
++//
++//   npm run deploy:hedera-testnet
++//
++// Env: HEDERA_PRIVATE_KEY (ECDSA, hex), optional CARBON_NFT_ADDRESS (defaults to
++// address(0): carbon minting disabled until setCarbonCreditNFT is called).
++const fs = require("fs");
++const path = require("path");
++const { execSync } = require("child_process");
++const hre = require("hardhat");
++
++const MIRROR = "https://testnet.mirrornode.hedera.com";
++
++async function mirrorContractId(evmAddress) {
++  // The mirror node lags consensus by a few seconds.
++  for (let i = 0; i < 20; i++) {
++    const res = await fetch(`${MIRROR}/api/v1/contracts/${evmAddress}`);
++    if (res.ok) return (await res.json()).contract_id;
++    await new Promise((r) => setTimeout(r, 3000));
++  }
++  return null;
++}
++
++async function main() {
++  const { ethers, network } = hre;
++  const chainId = Number((await ethers.provider.getNetwork()).chainId);
++  if (network.name !== "hederaTestnet" || chainId !== 296) {
++    throw new Error(`Refusing to deploy: network "${network.name}" (chainId ${chainId}). This engine is pre-audit and deploys to hederaTestnet (296) only.`);
++  }
++  const [deployer] = await ethers.getSigners();
++  if (!deployer) throw new Error("HEDERA_PRIVATE_KEY is not set in .env");
++
++  const nft = process.env.CARBON_NFT_ADDRESS || ethers.ZeroAddress;
++  console.log(`Deployer  ${deployer.address}  balance ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} HBAR`);
++  console.log(`Carbon NFT ${nft === ethers.ZeroAddress ? "not configured (address(0))" : nft}`);
++
++  const swap = await (await ethers.getContractFactory("AtomicSwapV2_Hedera")).deploy(nft);
++  const tx = swap.deploymentTransaction();
++  console.log(`Deploy tx  ${tx.hash}`);
++  await swap.waitForDeployment();
++  const evmAddress = await swap.getAddress();
++  console.log(`Deployed   ${evmAddress}`);
++
++  const contractId = await mirrorContractId(evmAddress);
++  console.log(`Contract ID ${contractId ?? "not yet on the mirror node — look it up by EVM address later"}`);
++
++  let gitCommit = null;
++  try {
++    gitCommit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
++  } catch {}
++
++  const record = {
++    contract: "AtomicSwapV2_Hedera",
++    status: "Pre-audit · Testnet only · Not deployed for live value",
++    network: "hedera-testnet",
++    chainId,
++    contractId,
++    evmAddress,
++    deployer: deployer.address,
++    deployTx: tx.hash,
++    carbonCreditNFT: nft,
++    solc: "0.8.19",
++    openzeppelin: "4.9.6",
++    gitCommit,
++    deployedAt: new Date().toISOString(),
++  };
++  const dir = path.join(__dirname, "..", "deployments");
++  fs.mkdirSync(dir, { recursive: true });
++  fs.writeFileSync(path.join(dir, "hedera-testnet.json"), JSON.stringify(record, null, 2) + "\n");
++  console.log(`\nRecorded in deployments/hedera-testnet.json`);
++  if (contractId) console.log(`For the Hedera connection check: HEDERA_CONTRACT_IDS=AtomicSwapV2_Hedera=${contractId}`);
++}
++
++main().catch((e) => {
++  console.error(e.message ?? e);
++  process.exitCode = 1;
++});
+diff --git a/scripts/smoke-hedera.js b/scripts/smoke-hedera.js
+new file mode 100644
+index 0000000..e5332c2
+--- /dev/null
++++ b/scripts/smoke-hedera.js
+@@ -0,0 +1,52 @@
++// Runs one simulated test swap against the deployed testnet contract:
++// create → fund → withdraw (both legs settle) → check the contract holds nothing for it.
++// The deployer plays both parties, so only gas is spent. Testnet only.
++//
++//   npm run smoke:hedera-testnet
++const fs = require("fs");
++const path = require("path");
++const hre = require("hardhat");
++
++async function main() {
++  const { ethers, network } = hre;
++  const chainId = Number((await ethers.provider.getNetwork()).chainId);
++  const onHedera = chainId === 296;
++  if (network.name !== "hardhat" && !onHedera) throw new Error(`Refusing: network "${network.name}" (chainId ${chainId}) is not hederaTestnet or local hardhat.`);
++  const [me] = await ethers.getSigners();
++
++  let swap;
++  if (onHedera) {
++    const rec = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "deployments", "hedera-testnet.json"), "utf8"));
++    swap = await ethers.getContractAt("AtomicSwapV2_Hedera", rec.evmAddress);
++    console.log(`Contract   ${rec.contractId ?? ""} ${rec.evmAddress}`);
++  } else {
++    swap = await (await ethers.getContractFactory("AtomicSwapV2_Hedera")).deploy(ethers.ZeroAddress);
++    console.log(`Contract   local ${await swap.getAddress()}`);
++  }
++
++  // Inside the Hedera EVM msg.value is tinybars (8 decimals); the relay takes weibars (18).
++  const value = ethers.parseEther("0.01"); // 0.01 HBAR sent per leg
++  const amount = onHedera ? value / 10n ** 10n : value; // 1,000,000 tinybars on Hedera
++  const secret = ethers.hexlify(ethers.randomBytes(32));
++  const expiry = Math.floor(Date.now() / 1000) + 3600;
++  const addr = await swap.getAddress();
++  const before = await ethers.provider.getBalance(addr);
++
++  const rc = await (await swap.createSwap(me.address, ethers.ZeroAddress, ethers.ZeroAddress, amount, amount, ethers.sha256(secret), expiry, { value })).wait();
++  const id = rc.logs.map((l) => { try { return swap.interface.parseLog(l); } catch { return null; } }).find((e) => e?.name === "SwapCreated").args.swapId;
++  console.log(`1 created   ${id}  tx ${rc.hash}`);
++  console.log(`2 funded    tx ${(await (await swap.fundSwap(id, { value })).wait()).hash}`);
++  console.log(`3 withdrawn tx ${(await (await swap.withdraw(id, secret)).wait()).hash}`);
++
++  const s = await swap.swaps(id);
++  const after = await ethers.provider.getBalance(addr);
++  const ok = s.withdrawn && s.funded && after === before;
++  console.log(`4 settled=${s.withdrawn} funded=${s.funded}; contract balance ${ethers.formatEther(before)} → ${ethers.formatEther(after)} HBAR`);
++  console.log(ok ? "\nTEST SWAP PASSED (simulated · testnet)" : "\nTEST SWAP FAILED");
++  if (!ok) process.exitCode = 1;
++}
++
++main().catch((e) => {
++  console.error(e.message ?? e);
++  process.exitCode = 1;
++});
+diff --git a/test/AtomicSwapV2.settlement.test.js b/test/AtomicSwapV2.settlement.test.js
+new file mode 100644
+index 0000000..a9cc342
+--- /dev/null
++++ b/test/AtomicSwapV2.settlement.test.js
+@@ -0,0 +1,160 @@
++// Regression tests for the pre-audit settlement fixes (26 Sep 2026), run against both
++// AtomicSwapV2_Hedera and AtomicSwapV2_Eth. F1–F4 name the findings each test guards.
++const { expect } = require("chai");
++const { ethers, network } = require("hardhat");
++
++const ONE = ethers.parseEther("1");
++const bal = (a) => ethers.provider.getBalance(a);
++
++async function expectRevert(promise, reason) {
++  try {
++    await promise;
++  } catch (e) {
++    // Hardhat can't always infer the reason (viaIR source maps); decode Error(string) data too.
++    let decoded = "";
++    const data = e.data?.data ?? e.data;
++    if (typeof data === "string" && data.startsWith("0x08c379a0")) {
++      decoded = ethers.AbiCoder.defaultAbiCoder().decode(["string"], "0x" + data.slice(10))[0];
++    }
++    expect(`${e.message} ${decoded}`).to.include(reason);
++    return;
++  }
++  throw new Error(`expected revert "${reason}"`);
++}
++
++async function passTime(s) {
++  await network.provider.send("evm_increaseTime", [s]);
++  await network.provider.send("evm_mine");
++}
++
++function newSecret() {
++  const secret = ethers.hexlify(ethers.randomBytes(32));
++  return { secret, lock: ethers.sha256(secret) };
++}
++
++for (const name of ["AtomicSwapV2_Hedera", "AtomicSwapV2_Eth"]) {
++  describe(`${name} — settlement`, () => {
++    let swap, addr, admin, alice, bob, mallory, mallory2, cb;
++
++    beforeEach(async () => {
++      [admin, alice, bob, mallory, mallory2, cb] = await ethers.getSigners();
++      swap = await (await ethers.getContractFactory(name)).deploy(ethers.ZeroAddress);
++      addr = await swap.getAddress();
++    });
++
++    async function create(from, counterparty, initAmt, cpAmt, lock, { ttl = 3600, initAsset = ethers.ZeroAddress, cpAsset = ethers.ZeroAddress, value } = {}) {
++      const expiry = (await ethers.provider.getBlock("latest")).timestamp + ttl;
++      const rc = await (await swap.connect(from).createSwap(counterparty, initAsset, cpAsset, initAmt, cpAmt, lock, expiry, { value: value ?? (initAsset === ethers.ZeroAddress ? initAmt : 0n) })).wait();
++      return rc.logs.map((l) => { try { return swap.interface.parseLog(l); } catch { return null; } }).find((e) => e?.name === "SwapCreated").args.swapId;
++    }
++
++    it("settles both legs in one withdraw; contract ends empty (F1)", async () => {
++      const { secret, lock } = newSecret();
++      const id = await create(alice, bob.address, ONE, 2n * ONE, lock);
++      await swap.connect(bob).fundSwap(id, { value: 2n * ONE });
++      const [a0, b0] = [await bal(alice.address), await bal(bob.address)];
++      await swap.connect(mallory).withdraw(id, secret).catch(() => {}); // non-party rejected
++      await swap.connect(alice).withdraw(id, secret);
++      expect((await bal(bob.address)) - b0).to.equal(ONE);
++      expect((await bal(alice.address)) > a0 + 2n * ONE - ONE / 100n).to.equal(true); // 2 in, minus gas
++      expect(await bal(addr)).to.equal(0n);
++      await expectRevert(swap.connect(bob).withdraw(id, secret), "Swap already completed");
++      await passTime(7200);
++      await expectRevert(swap.refund(id), "Swap already completed");
++    });
++
++    it("rejects withdraw before the counterparty funds; other swaps' deposits stay put (F2)", async () => {
++      await create(alice, bob.address, 5n * ONE, ONE, newSecret().lock);
++      const m = newSecret();
++      const id = await create(mallory, mallory2.address, 1n, 5n * ONE, m.lock);
++      await expectRevert(swap.connect(mallory).withdraw(id, m.secret), "Counterparty has not funded");
++      expect(await bal(addr)).to.equal(5n * ONE + 1n);
++    });
++
++    it("refund of an unfunded swap returns only the initiator leg (F3)", async () => {
++      await create(alice, bob.address, 5n * ONE, ONE, newSecret().lock);
++      const id = await create(mallory, mallory2.address, 1n, 5n * ONE, newSecret().lock, { ttl: 60 });
++      await passTime(120);
++      const m2 = await bal(mallory2.address);
++      await swap.connect(alice).refund(id);
++      expect(await bal(mallory2.address)).to.equal(m2);
++      expect(await bal(addr)).to.equal(5n * ONE);
++    });
++
++    it("refund of a funded swap returns both legs", async () => {
++      const id = await create(alice, bob.address, ONE, 2n * ONE, newSecret().lock, { ttl: 60 });
++      await swap.connect(bob).fundSwap(id, { value: 2n * ONE });
++      await expectRevert(swap.refund(id), "Swap not expired");
++      await passTime(120);
++      const [a0, b0] = [await bal(alice.address), await bal(bob.address)];
++      await swap.connect(mallory).refund(id);
++      expect((await bal(alice.address)) - a0).to.equal(ONE);
++      expect((await bal(bob.address)) - b0).to.equal(2n * ONE);
++      expect(await bal(addr)).to.equal(0n);
++    });
++
++    it("rejects a second funding (F4)", async () => {
++      const id = await create(alice, bob.address, ONE, ONE, newSecret().lock);
++      await swap.connect(bob).fundSwap(id, { value: ONE });
++      await expectRevert(swap.connect(bob).fundSwap(id, { value: ONE }), "Already funded");
++      expect(await bal(addr)).to.equal(2n * ONE);
++    });
++
++    it("rejects wrong preimage, non-parties, wrong amounts and expired funding", async () => {
++      const { secret, lock } = newSecret();
++      const id = await create(alice, bob.address, ONE, ONE, lock, { ttl: 60 });
++      await expectRevert(swap.connect(mallory).fundSwap(id, { value: ONE }), "Only counterparty can fund");
++      await expectRevert(swap.connect(bob).fundSwap(id, { value: ONE - 1n }), "Incorrect");
++      await swap.connect(bob).fundSwap(id, { value: ONE });
++      await expectRevert(swap.connect(alice).withdraw(id, ethers.ZeroHash), "Invalid preimage");
++      await expectRevert(swap.connect(mallory).withdraw(id, secret), "Not party");
++      await passTime(120);
++      await expectRevert(swap.connect(alice).withdraw(id, secret), "Swap expired");
++    });
++
++    it("settles ERC-20 legs and rejects native value sent with a token leg", async () => {
++      const Tok = await ethers.getContractFactory("MockERC20");
++      const [ta, tb] = [await Tok.deploy(), await Tok.deploy()];
++      await ta.mint(alice.address, 100n);
++      await tb.mint(bob.address, 50n);
++      await ta.connect(alice).approve(addr, 100n);
++      await tb.connect(bob).approve(addr, 50n);
++      const { secret, lock } = newSecret();
++      await expectRevert(create(alice, bob.address, 100n, 50n, lock, { initAsset: await ta.getAddress(), cpAsset: await tb.getAddress(), value: 1n }), "sent with token leg");
++      const id = await create(alice, bob.address, 100n, 50n, lock, { initAsset: await ta.getAddress(), cpAsset: await tb.getAddress() });
++      await swap.connect(bob).fundSwap(id);
++      await swap.connect(bob).withdraw(id, secret);
++      expect(await ta.balanceOf(bob.address)).to.equal(100n);
++      expect(await tb.balanceOf(alice.address)).to.equal(50n);
++      expect(await ta.balanceOf(addr)).to.equal(0n);
++    });
++
++    it("forceRefund is central-bank-only and returns only deposited legs", async () => {
++      const id = await create(alice, bob.address, ONE, 2n * ONE, newSecret().lock);
++      await expectRevert(swap.connect(mallory).forceRefund(id), "Only BRICS central bank node");
++      await swap.connect(admin).addCentralBankNode(cb.address);
++      await swap.connect(cb).forceRefund(id);
++      expect(await bal(addr)).to.equal(0n);
++      await expectRevert(swap.connect(cb).forceRefund(id), "Swap already completed");
++    });
++  });
++}
++
++describe("AtomicSwapV2_Hedera — carbon NFT", () => {
++  it("is disabled until configured, then mints once per settled swap", async () => {
++    const [admin, alice, bob, mallory] = await ethers.getSigners();
++    const swap = await (await ethers.getContractFactory("AtomicSwapV2_Hedera")).deploy(ethers.ZeroAddress);
++    const { secret, lock } = newSecret();
++    const expiry = (await ethers.provider.getBlock("latest")).timestamp + 3600;
++    const rc = await (await swap.connect(alice).createSwap(bob.address, ethers.ZeroAddress, ethers.ZeroAddress, ONE, ONE, lock, expiry, { value: ONE })).wait();
++    const id = swap.interface.parseLog(rc.logs[0]).args.swapId;
++    await swap.connect(bob).fundSwap(id, { value: ONE });
++    await swap.connect(bob).withdraw(id, secret);
++    await expectRevert(swap.connect(alice).mintCarbonNFT(id, "ipfs://x"), "Carbon NFT not configured");
++    const nft = await (await ethers.getContractFactory("MockCarbonNFT")).deploy();
++    await expectRevert(swap.connect(mallory).setCarbonCreditNFT(await nft.getAddress()), "AccessControl");
++    await swap.connect(admin).setCarbonCreditNFT(await nft.getAddress());
++    await swap.connect(alice).mintCarbonNFT(id, "ipfs://x");
++    await expectRevert(swap.connect(bob).mintCarbonNFT(id, "ipfs://y"), "Carbon NFT already minted");
++  });
++});
+-- 
+2.43.0
+
