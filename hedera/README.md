@@ -26,11 +26,14 @@ Exit code `0` = CONNECTED, `1` = at least one check failed.
 
 | Field | Value |
 |---|---|
-| Account ID | `0.0.10716121` |
-| EVM address | `0xd1d8734c645392df255d98287c645592407a3e23` (ECDSA key alias, not the long-zero form) |
-| Network | Testnet (assumed from the portal; confirmed by the check) |
+| Account ID | `0.0.10717267` (active) |
+| EVM address | `0x76adac5080337ac817801d5dc58839cb50c439df` (ECDSA key alias) |
+| Key type | ECDSA secp256k1, for EVM tooling (Hardhat, Foundry, MetaMask) |
+| Network | Testnet |
 
-The check fails if the mirror node reports a different EVM address for this account.
+The check fails if the mirror node reports a different EVM address for this account, or if the `.env` key doesn't match it.
+
+**Retired:** `0.0.10716121` (EVM `0xd1d8734c645392df255d98287c645592407a3e23`). Its private key was exposed on 2026-09-25, so don't use it for deployments, signing or any GCN material.
 
 ## Status
 
