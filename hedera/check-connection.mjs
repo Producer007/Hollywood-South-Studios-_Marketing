@@ -23,6 +23,15 @@ const operatorId = process.env.HEDERA_OPERATOR_ID?.trim();
 const operatorKey = process.env.HEDERA_OPERATOR_KEY?.trim();
 const expectedEvm = process.env.HEDERA_OPERATOR_EVM?.trim().toLowerCase();
 
+// Public identity of a key, safe to print: ECDSA keys map to an EVM address, ED25519 keys don't.
+function describeKey(pub) {
+  try {
+    return `an ECDSA key for EVM 0x${pub.toEvmAddress()}`;
+  } catch {
+    return `an ED25519 key (public ${pub.toStringRaw().slice(0, 12)}…)`;
+  }
+}
+
 // The portal shows ECDSA keys as raw hex (0x…) and ED25519 keys as DER (302e…); accept both.
 function parseKey(k) {
   if (/^(0x)?[0-9a-fA-F]{64}$/.test(k)) return PrivateKey.fromStringECDSA(k.replace(/^0x/, ""));
@@ -78,7 +87,9 @@ async function checkAccount() {
       try {
         const pub = parseKey(operatorKey).publicKey;
         const keyOk = info.key?.key?.toLowerCase() === pub.toStringRaw().toLowerCase();
-        record("Operator key matches account", keyOk, keyOk ? `public key matches, derived EVM 0x${pub.toEvmAddress()}` : "the private key in .env does NOT belong to this account");
+        record("Operator key matches account", keyOk, keyOk
+          ? `public key matches (${describeKey(pub)})`
+          : `the private key in .env does NOT belong to this account — it is ${describeKey(pub)}; this account's EVM is ${info.evm_address}`);
       } catch (e) {
         record("Operator key matches account", false, `could not parse HEDERA_OPERATOR_KEY: ${errText(e)}`);
       }
@@ -107,7 +118,7 @@ function tcpProbe(host, port, ms = 5000) {
 // ISP networks block those ports, which shows up in the SDK only as "timeout exceeded".
 async function checkGrpcPorts() {
   try {
-    const { nodes } = await fetchJson(`${mirrorUrl}/api/v1/network/nodes?limit=4`);
+    const { nodes } = await fetchJson(`${mirrorUrl}/api/v1/network/nodes?limit=25`);
     const targets = nodes.flatMap((n) => n.service_endpoints.map((e) => ({ node: n.node_account_id, host: e.domain_name || e.ip_address_v4, port: e.port })));
     const probed = await Promise.all(targets.map(async (t) => ({ ...t, ok: await tcpProbe(t.host, t.port) })));
     const open = probed.filter((t) => t.ok);
@@ -132,6 +143,9 @@ async function checkConsensus() {
     client = reachableNodes.length
       ? Client.forNetwork(Object.fromEntries(reachableNodes.map((t) => [`${t.host}:${t.port}`, t.node])))
       : Client.forName(network);
+    // Testnet nodes answer BUSY under load; retry longer across every reachable node.
+    client.setMaxAttempts(30);
+    client.setMaxBackoff(8000);
     client.setOperator(AccountId.fromString(operatorId), parseKey(operatorKey));
     client.setRequestTimeout(60000);
     // Balance queries are free, so this proves the SDK reaches the consensus nodes without spending HBAR.
