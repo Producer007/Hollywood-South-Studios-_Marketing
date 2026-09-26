@@ -38,6 +38,21 @@ The check fails if the mirror node reports a different EVM address for this acco
 
 **Retired:** `0.0.10716121` (EVM `0xd1d8734c645392df255d98287c645592407a3e23`). Its private key was exposed on 2026-09-25, so don't use it for deployments, signing or any GCN material.
 
+## Verified connection
+
+**2026-09-26: CONNECTED (signed transaction confirmed), 7/7 checks passed**, run from the operator's machine on testnet.
+
+| Check | Result |
+|---|---|
+| Mirror node | Live (block #40987331, 3s old) |
+| JSON-RPC relay | chainId 296 (testnet) |
+| Account `0.0.10717267` | Exists, 1000 ℏ, ECDSA_SECP256K1 |
+| Key ↔ account | Match; EVM `0x76adac5080337ac817801d5dc58839cb50c439df` |
+| gRPC ports | 28/28 consensus endpoints reachable |
+| Signed transaction | `SUCCESS` via node 0.0.9, tx `0.0.10717267@1790381836.689166189` ([mirror record](https://testnet.mirrornode.hedera.com/api/v1/transactions/0.0.10717267-1790381836-689166189)) |
+
+This verifies testnet connectivity and signing only. No GCN contract or token is deployed by this check.
+
 ## Status
 
 - **Network:** testnet by default. The portal issues testnet/previewnet accounts. Mainnet is not active for GCN and remains a future buildout item.
