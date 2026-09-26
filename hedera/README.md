@@ -53,6 +53,20 @@ The check fails if the mirror node reports a different EVM address for this acco
 
 This verifies testnet connectivity and signing only. No GCN contract or token is deployed by this check.
 
+## Deployed contracts (testnet)
+
+| Contract | Contract ID | EVM address | Status |
+|---|---|---|---|
+| AtomicSwapV2_Hedera | `0.0.10722355` | `0x969D5457DFfaD4Cdf240dd3a246e41dA0F156465` | **Testnet deployed 2026-09-26 · Pre-audit · Not for live value** |
+
+- Deployed from `0.0.10717267`, deploy tx `0x7d6ce51ab52e30abf80a26db83c50142d963acd5d74f191ef076160353b2416a`. The contract ID was resolved from the mirror node by the deploy script.
+- Source: `gcn-atomicswap-v2` with settlement fixes F1–F4 (17/17 tests passing on the operator's machine).
+- Test swap (simulated, deployer on both sides): create `0xa9cf9b5d…cbe6`, fund `0xbc5f0a73…72e8`, withdraw `0x6809f65c…eae2`. Both legs settled and the contract balance stayed at 0.
+- Carbon NFT is not configured (`address(0)`), so minting is disabled.
+- On-chain Chainlink price validation is **not implemented** in this contract.
+
+To re-verify: `HEDERA_CONTRACT_IDS=AtomicSwapV2_Hedera=0.0.10722355 npm run check`.
+
 ## Status
 
 - **Network:** testnet by default. The portal issues testnet/previewnet accounts. Mainnet is not active for GCN and remains a future buildout item.
