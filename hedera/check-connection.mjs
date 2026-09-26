@@ -1,9 +1,10 @@
 // Hedera connection check: mirror node REST, JSON-RPC relay, and (with operator
 // credentials) a signed-client balance query against the consensus nodes.
-// Read-only. Submits no transactions and spends no HBAR.
+// Read-only by default. With --signed (testnet/previewnet only) it also submits one
+// 1-tinybar transfer to prove the key signs and the consensus nodes accept it.
 import "dotenv/config";
 import net from "node:net";
-import { AccountBalanceQuery, AccountId, Client, PrivateKey } from "@hashgraph/sdk";
+import { AccountId, Client, Hbar, PrivateKey, TransferTransaction } from "@hashgraph/sdk";
 
 const NETWORKS = {
   mainnet: { mirror: "https://mainnet.mirrornode.hedera.com", rpc: "https://mainnet.hashio.io/api", chainId: 295 },
@@ -21,6 +22,7 @@ const mirrorUrl = process.env.HEDERA_MIRROR_URL || cfg.mirror;
 const rpcUrl = process.env.HEDERA_JSON_RPC_URL || cfg.rpc;
 const operatorId = process.env.HEDERA_OPERATOR_ID?.trim();
 const operatorKey = process.env.HEDERA_OPERATOR_KEY?.trim();
+const signedCheck = process.argv.includes("--signed") || process.env.HEDERA_SIGNED_CHECK === "1";
 const expectedEvm = process.env.HEDERA_OPERATOR_EVM?.trim().toLowerCase();
 
 // Public identity of a key, safe to print: ECDSA keys map to an EVM address, ED25519 keys don't.
@@ -132,9 +134,21 @@ async function checkGrpcPorts() {
   }
 }
 
+// AccountBalanceQuery is throttled on consensus nodes from v0.74 and removed in v0.77 (Oct 2026),
+// so the consensus path is proven with a real signed transaction instead: 1 tinybar to the
+// network fee account 0.0.98. Costs a fraction of a testnet ℏ. Never runs on mainnet.
 async function checkConsensus() {
+  const name = "Consensus nodes (signed tx)";
+  if (!signedCheck) {
+    record(name, null, "not run — use `npm run check -- --signed` to submit a 1-tinybar testnet transfer");
+    return;
+  }
+  if (network === "mainnet") {
+    record(name, null, "refused on mainnet — the signed check is testnet/previewnet only");
+    return;
+  }
   if (!operatorId || !operatorKey) {
-    record("Consensus nodes (SDK)", null, "HEDERA_OPERATOR_ID / HEDERA_OPERATOR_KEY not set");
+    record(name, null, "HEDERA_OPERATOR_ID / HEDERA_OPERATOR_KEY not set");
     return;
   }
   let client;
@@ -143,16 +157,19 @@ async function checkConsensus() {
     client = reachableNodes.length
       ? Client.forNetwork(Object.fromEntries(reachableNodes.map((t) => [`${t.host}:${t.port}`, t.node])))
       : Client.forName(network);
-    // Testnet nodes answer BUSY under load; retry longer across every reachable node.
-    client.setMaxAttempts(30);
-    client.setMaxBackoff(8000);
     client.setOperator(AccountId.fromString(operatorId), parseKey(operatorKey));
-    client.setRequestTimeout(60000);
-    // Balance queries are free, so this proves the SDK reaches the consensus nodes without spending HBAR.
-    const balance = await new AccountBalanceQuery().setAccountId(operatorId).execute(client);
-    record("Consensus nodes (SDK)", true, `balance ${balance.hbars.toString()} via ${network} gRPC`);
+    client.setRequestTimeout(90000);
+    const response = await new TransferTransaction()
+      .addHbarTransfer(operatorId, Hbar.fromTinybars(-1))
+      .addHbarTransfer("0.0.98", Hbar.fromTinybars(1))
+      .setTransactionMemo("GCN connection check")
+      .execute(client);
+    const receipt = await response.getReceipt(client);
+    const txId = response.transactionId.toString();
+    const mirrorTx = txId.replace("@", "-").replace(/\.(\d+)$/, "-$1");
+    record(name, receipt.status.toString() === "SUCCESS", `${receipt.status} via node ${response.nodeId}, tx ${txId} (${mirrorUrl}/api/v1/transactions/${mirrorTx})`);
   } catch (e) {
-    record("Consensus nodes (SDK)", false, errText(e));
+    record(name, false, errText(e));
   } finally {
     client?.close();
   }
@@ -202,5 +219,9 @@ await checkTokens();
 
 const failed = results.filter((r) => r.ok === false).length;
 const skipped = results.filter((r) => r.ok === null).length;
-console.log(`\n${failed ? "NOT CONNECTED" : skipped ? "REACHABLE (credentials not configured)" : "CONNECTED"} — ${results.length - failed - skipped} pass, ${failed} fail, ${skipped} skipped`);
+const verdict = failed ? "NOT CONNECTED"
+  : !operatorId || !operatorKey ? "REACHABLE (credentials not configured)"
+  : signedCheck ? "CONNECTED (signed transaction confirmed)"
+  : "CONNECTED (read-only; add --signed to prove transaction signing)";
+console.log(`\n${verdict} — ${results.length - failed - skipped} pass, ${failed} fail, ${skipped} skipped`);
 process.exit(failed ? 1 : 0);

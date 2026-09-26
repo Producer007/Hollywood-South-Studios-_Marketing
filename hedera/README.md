@@ -1,6 +1,6 @@
 # Hedera Connection Check
 
-Read-only check that a machine can reach Hedera and that your Hedera Portal account works. Submits no transactions and spends no HBAR.
+Checks that a machine can reach Hedera and that your Hedera Portal account and key work. Read-only by default; `--signed` adds one 1-tinybar testnet transfer.
 
 | Check | What it proves |
 |---|---|
@@ -9,7 +9,7 @@ Read-only check that a machine can reach Hedera and that your Hedera Portal acco
 | Operator account (mirror) | Your portal account ID exists; shows balance and EVM address |
 | Contracts (`HEDERA_CONTRACT_IDS`) | Each contract ID exists on the network and isn't deleted. This is the evidence needed before page copy says "Testnet Deployed" |
 | HTS tokens (`HEDERA_TOKEN_IDS`) | Each test token exists; shows name, symbol, type and supply |
-| Consensus nodes (SDK) | `@hashgraph/sdk` signs in as your operator and runs a free `AccountBalanceQuery` over gRPC |
+| Consensus nodes (signed tx, `--signed`) | Signs and submits a 1-tinybar transfer to the fee account `0.0.98` and waits for a `SUCCESS` receipt. Proves key, signing and consensus end to end. Testnet/previewnet only, refused on mainnet |
 
 ## Run
 
@@ -17,8 +17,11 @@ Read-only check that a machine can reach Hedera and that your Hedera Portal acco
 cd hedera
 npm install
 cp .env.example .env   # paste Account ID + DER private key from portal.hedera.com/dashboard
-npm run check
+npm run check              # read-only
+npm run check -- --signed  # + one 1-tinybar testnet transfer
 ```
+
+`AccountBalanceQuery` is not used: Hedera throttles it on consensus nodes from release v0.74 and removes it in v0.77 (October 2026). Balances come from the mirror node.
 
 Exit code `0` = CONNECTED, `1` = at least one check failed.
 
