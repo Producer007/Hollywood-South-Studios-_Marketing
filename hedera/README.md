@@ -67,6 +67,12 @@ This verifies testnet connectivity and signing only. No GCN contract or token is
 
 To re-verify: `HEDERA_CONTRACT_IDS=AtomicSwapV2_Hedera=0.0.10722355 npm run check`.
 
+## HCS topics (testnet)
+
+| Topic | Purpose | Status |
+|---|---|---|
+| `0.0.10748998` | GCN HiveMind audit trail (AIP-01 messages) | First live run 2026-09-27: gold doré illustration, fictional data, halted `GATED` at $GOLD. No token minted. Code: `Producer007/Global-Concessions-Netwok-`, branch `claude/gcn-hivemind`, `hivemind/` |
+
 ## Status
 
 - **Network:** testnet by default. The portal issues testnet/previewnet accounts. Mainnet is not active for GCN and remains a future buildout item.
