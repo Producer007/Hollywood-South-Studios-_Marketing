@@ -1,0 +1,22 @@
+{
+  "name": "gcn-container-token-evm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GCN Cargo Container Token - EVM testnet (PRE-AUDIT, proof-of-concept)",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy:hedera-evm": "hardhat run scripts/deploy.js --network hederaTestnet",
+    "test:offline": "SOLC_JS_PATH=$(pwd)/node_modules/solc/soljson.js hardhat test",
+    "deploy-journey:hedera-evm": "SEED_JOURNEY=1 hardhat run scripts/deploy-journey.js --network hederaTestnet",
+    "deploy-journey:sepolia": "SEED_JOURNEY=1 hardhat run scripts/deploy-journey.js --network sepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^2.0.2",
+    "hardhat": "^2.22.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "4.9.6"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "gcn-container-token-hedera",
+  "version": "0.2.0",
+  "private": true,
+  "description": "GCN Cargo Container Token - Hedera TESTNET (HTS NFT + HCS journey topic). Pre-audit proof-of-concept.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "check": "node src/check.js",
+    "create": "node src/create-collection.js",
+    "mint": "node src/mint-container.js",
+    "waypoint": "node src/log-waypoint.js",
+    "attest": "node src/attest.js",
+    "journey": "node src/journey.js",
+    "test": "node --test test/hedera.test.js"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.50.0",
+    "dotenv": "^16.4.5"
+  }
+}
