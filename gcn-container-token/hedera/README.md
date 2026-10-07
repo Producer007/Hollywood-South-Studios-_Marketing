@@ -10,7 +10,7 @@ This folder holds the native Hedera side of the module:
 
 The EVM contracts can also run on Hedera through the JSON-RPC relay (chainId 296). That path is described at the end of this file.
 
-> **Status, 3 October 2026.** The scripts pass 16 offline tests (`npm test`). Those tests run against an in-memory ledger and a fake mirror node, so they test the scripts' logic, not Hedera itself. **Nothing in this folder has been run on Hedera testnet yet.** The steps below are how to do that.
+> **Status, 7 October 2026.** The scripts pass 16 offline tests (`npm test`). Those tests run against an in-memory ledger and a fake mirror node, so they test the scripts' logic, not Hedera itself. **`check`, `create`, `mint`, `waypoint` and `journey` have now been run live on Hedera testnet** (collection `0.0.10897043`, topic `0.0.10897044`) with one SAMPLE container and two SAMPLE waypoints; the `journey` report rebuilt from the public mirror node showed the hash chain intact. That data is fictional. `attest` and the EVM deploy on the Hedera relay have not been run live.
 
 ## 1. Set up (once)
 

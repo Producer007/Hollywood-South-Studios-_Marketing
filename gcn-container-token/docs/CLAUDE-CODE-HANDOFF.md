@@ -6,8 +6,8 @@
 | **Platform** | GCN Exchange — addition to the existing exchange platform |
 | **Chains** | Hedera testnet · Solana devnet · EVM testnet (Sepolia, Hedera JSON-RPC relay 296) |
 | **Status** | **Proof-of-concept. Pre-audit. Testnet only. Not deployed for live value.** |
-| **Version** | v3 — Hedera update; supersedes v2 (2 October 2026) |
-| **Date** | 3 October 2026 |
+| **Version** | v3.1 — first live Hedera testnet run; supersedes v3 (3 October 2026) |
+| **Date** | 7 October 2026 |
 | **Author** | Claude Code session, for James A. Holmes Jr. |
 
 ---
@@ -140,10 +140,15 @@ check against the real world, not against my own arithmetic.
 
 ### Compiles and parses but has never run
 
-- **Hedera scripts** (`check`, `create-collection`, `mint-container`, `attest`,
-  `log-waypoint`, `journey`) — tested offline against an in-memory ledger and a fake mirror
-  node (v3). That proves the scripts' logic, not Hedera. **Never executed against Hedera
-  testnet.** Needs the operator key on the machine that runs them.
+- **Hedera `attest`** — tested offline only (in-memory ledger and a fake mirror node). Not yet
+  run on Hedera testnet; it needs a real Pole Star MTI result hash.
+- **Hedera `check`, `create-collection`, `mint-container`, `log-waypoint`, `journey`** — **run
+  live on Hedera testnet on 6 October 2026** (v3.1). Collection `0.0.10897043`, topic
+  `0.0.10897044`, operator `0.0.10717267`. One SAMPLE container (`CSQU3054383`, serial 1) with two
+  SAMPLE waypoints (CNSHA, SGSIN; 2,369.6 mi lower bound). The `journey` report, rebuilt from the
+  public mirror node, showed 2 waypoints, hash chain intact, no anomalies. All of it is fictional
+  demo data on testnet, not tracking of a real container. Run by James from a Mac, not from the
+  Claude Code sandbox, which cannot reach Hedera.
 - **Solana scripts** (`mint-container`, `log-waypoint`) — syntax-checked only. Never
   executed against devnet.
 - **`deploy.js` / `deploy-journey.js`** — run end to end on a local Hardhat node (v3); never
@@ -361,8 +366,9 @@ node src/log-waypoint.js --iso CSQU3054383 --event LOADED_VESSEL \
 
 ## 8. Next steps, in priority order
 
-1. **Run it on the three testnets.** Nothing on the Hedera or Solana side has executed.
-   This is the gap between "compiles" and "works", and it is the first thing to close.
+1. **Finish running it on the testnets.** Hedera HTS/HCS is done (v3.1). Still never executed:
+   the EVM deploys on Sepolia and the Hedera JSON-RPC relay (296), and the Solana scripts on
+   devnet. This is the remaining gap between "compiles" and "works".
 2. **Connect one live carrier feed.** The DCSA adapter is built and tested; nothing is
    connected. Pick a single carrier, obtain sandbox credentials, and validate the mapping
    field-by-field against their published API. Until this happens, "compatible" is a
