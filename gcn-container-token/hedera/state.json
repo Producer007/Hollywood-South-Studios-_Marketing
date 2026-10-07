@@ -1,0 +1,12 @@
+{
+  "network": "hedera-testnet",
+  "tokenId": "0.0.10897043",
+  "topicId": "0.0.10897044",
+  "operator": "0.0.10717267",
+  "createdAt": "2026-10-06T22:56:43.184Z",
+  "status": "PRE-AUDIT / TESTNET",
+  "journeys": {},
+  "serials": {
+    "CSQU3054383": "1"
+  }
+}
